@@ -1,6 +1,7 @@
 """
 FIRMA LEGAL S.B.S. — Generador de Portales de Cliente
-Usa la API de Notion directamente con requests. Sin notion-client.
+API de Notion directamente con requests. Sin dependencias externas.
+Tolerante a errores de acceso en bases secundarias.
 """
 
 import os, requests
@@ -18,14 +19,18 @@ HEADERS = {
 }
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# ── API ───────────────────────────────────────────────────────────────────────
 def notion_query(db_id, filter_obj=None):
     pages, cursor = [], None
     url = f"https://api.notion.com/v1/databases/{db_id}/query"
     while True:
         body = {"page_size": 100}
         if filter_obj: body["filter"] = filter_obj
-        if cursor: body["start_cursor"] = cursor
-        r = requests.post(url, headers=HEADERS, json=body)
+        if cursor:     body["start_cursor"] = cursor
+        r = requests.post(url, headers=HEADERS, json=body, timeout=30)
+        if r.status_code == 404:
+            print(f"   ⚠️  Base {db_id} no accesible (404). Continúa sin esos datos.")
+            return []
         r.raise_for_status()
         data = r.json()
         pages.extend(data.get("results", []))
@@ -34,10 +39,16 @@ def notion_query(db_id, filter_obj=None):
     return pages
 
 def notion_get_page(page_id):
-    r = requests.get(f"https://api.notion.com/v1/pages/{page_id}", headers=HEADERS)
+    r = requests.get(
+        f"https://api.notion.com/v1/pages/{page_id}",
+        headers=HEADERS, timeout=30
+    )
+    if r.status_code in (404, 403):
+        return None
     r.raise_for_status()
     return r.json()
 
+# ── PROPS ─────────────────────────────────────────────────────────────────────
 def gp(props, name, fallback=""):
     p = props.get(name)
     if not p: return fallback
@@ -59,52 +70,69 @@ def gp(props, name, fallback=""):
         if ft == "string": return f.get("string") or fallback
     return fallback
 
+# ── FECHA ─────────────────────────────────────────────────────────────────────
+MESES = ["enero","febrero","marzo","abril","mayo","junio",
+         "julio","agosto","septiembre","octubre","noviembre","diciembre"]
+MESES_C = ["ENE","FEB","MAR","ABR","MAY","JUN","JUL","AGO","SEP","OCT","NOV","DIC"]
+
 def fdate(s):
-    if not s or s=="—": return "—"
+    if not s or s == "—": return "—"
     try:
-        d=datetime.strptime(s[:10],"%Y-%m-%d")
-        m=["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
-        return f"{d.day} de {m[d.month-1]} de {d.year}"
+        d = datetime.strptime(s[:10], "%Y-%m-%d")
+        return f"{d.day} de {MESES[d.month-1]} de {d.year}"
     except: return s
 
 def fshort(s):
     if not s: return "—"
-    try: d=datetime.strptime(s[:10],"%Y-%m-%d"); return f"{d.day:02d}/{d.month:02d}/{d.year}"
+    try:
+        d = datetime.strptime(s[:10], "%Y-%m-%d")
+        return f"{d.day:02d}/{d.month:02d}/{d.year}"
     except: return s
 
 def fday(s):
-    try: return str(datetime.strptime(s[:10],"%Y-%m-%d").day)
+    try: return str(datetime.strptime(s[:10], "%Y-%m-%d").day)
     except: return "—"
 
 def fmon(s):
-    m=["ENE","FEB","MAR","ABR","MAY","JUN","JUL","AGO","SEP","OCT","NOV","DIC"]
-    try: return m[datetime.strptime(s[:10],"%Y-%m-%d").month-1]
+    try: return MESES_C[datetime.strptime(s[:10], "%Y-%m-%d").month - 1]
     except: return ""
 
 def cur(v):
     try: return f"${float(v):,.2f}"
     except: return "$0.00"
 
-def pct(c,p):
-    try: return min(100,round(float(c)/float(p)*100)) if float(p)>0 else 0
+def pct(c, p):
+    try: return min(100, round(float(c)/float(p)*100)) if float(p) > 0 else 0
     except: return 0
 
 def ecls(e):
-    return {"En trámite":"pill-tramite","En espera de resolución":"pill-espera","Urgente":"pill-urgente","Listo para entrega":"pill-listo","Cerrado — Favorable":"pill-cerrado","Cerrado — Desfavorable":"pill-cerrado"}.get(e,"pill-tramite")
+    return {
+        "En trámite": "pill-tramite",
+        "En espera de resolución": "pill-espera",
+        "Urgente": "pill-urgente",
+        "Listo para entrega": "pill-listo",
+        "Cerrado — Favorable": "pill-cerrado",
+        "Cerrado — Desfavorable": "pill-cerrado",
+    }.get(e, "pill-tramite")
 
-ABG={"Nelson A. Castillo B.":"Nelson Alexander Castillo Barrera","Fátima A. Serrano D.":"Fátima Alejandra Serrano Díaz","Estela S. Sandoval S.":"Estela Saraí Sandoval Sandoval","Conjunto":"Equipo S.B.S."}
+ABG = {
+    "Nelson A. Castillo B.":  "Nelson Alexander Castillo Barrera",
+    "Fátima A. Serrano D.":   "Fátima Alejandra Serrano Díaz",
+    "Estela S. Sandoval S.":  "Estela Saraí Sandoval Sandoval",
+    "Conjunto":               "Equipo S.B.S.",
+}
 
-CSS="""
-:root{--deep:#0c1c38;--gold:#C9A84C;--gb:rgba(201,168,76,.08);--gbd:rgba(201,168,76,.22);--bd:rgba(255,255,255,.07);}
+# ── CSS ───────────────────────────────────────────────────────────────────────
+CSS = """:root{--deep:#0c1c38;--gold:#C9A84C;--gb:rgba(201,168,76,.08);--gbd:rgba(201,168,76,.22);--bd:rgba(255,255,255,.07);}
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:'DM Sans',sans-serif;background:var(--deep);color:#fff;min-height:100vh;}
 .ph{background:rgba(0,0,0,.42);border-bottom:1px solid var(--bd);height:58px;display:flex;align-items:center;justify-content:space-between;padding:0 2rem;position:sticky;top:0;z-index:100;backdrop-filter:blur(10px);}
 .ph-l{display:flex;align-items:center;gap:16px;}
 .logo{font-family:'Playfair Display',serif;font-size:14px;color:var(--gold);letter-spacing:2px;}
 .sep{width:1px;height:22px;background:rgba(255,255,255,.12);}
-.tag{font-size:10px;letter-spacing:3px;color:rgba(255,255,255,.28);}
+.ptag{font-size:10px;letter-spacing:3px;color:rgba(255,255,255,.28);}
 .ph-r{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
-.nie-badge{font-family:'DM Mono',monospace;font-size:11px;color:var(--gold);background:var(--gb);border:1px solid var(--gbd);padding:3px 11px;letter-spacing:1px;}
+.nie-b{font-family:'DM Mono',monospace;font-size:11px;color:var(--gold);background:var(--gb);border:1px solid var(--gbd);padding:3px 11px;letter-spacing:1px;}
 .who{font-size:12px;color:rgba(255,255,255,.45);}
 .who strong{color:rgba(255,255,255,.82);}
 .sec{font-size:9px;letter-spacing:2px;color:rgba(100,210,160,.75);background:rgba(100,210,160,.07);border:1px solid rgba(100,210,160,.2);padding:3px 10px;}
@@ -168,51 +196,74 @@ body{font-family:'DM Sans',sans-serif;background:var(--deep);color:#fff;min-heig
 .il:last-child{border-bottom:none;}
 .ill{color:rgba(255,255,255,.28);font-size:10.5px;letter-spacing:.5px;flex-shrink:0;}
 .ilv{font-size:12px;color:rgba(255,255,255,.62);text-align:right;line-height:1.4;}
-.empty{color:rgba(255,255,255,.28);font-size:12px;padding:.4rem 0;}
+.empty{color:rgba(255,255,255,.28);font-size:12px;padding:.4rem 0;font-style:italic;}
 footer{border-top:1px solid rgba(255,255,255,.06);padding:1.5rem 2rem;text-align:center;}
 footer p{font-size:11px;color:rgba(255,255,255,.18);letter-spacing:.5px;line-height:1.8;}
 footer a{color:var(--gold);text-decoration:none;}
 .gen{position:fixed;bottom:10px;right:12px;font-size:9px;letter-spacing:1.5px;color:rgba(255,255,255,.1);background:rgba(0,0,0,.3);padding:3px 9px;border:1px solid rgba(255,255,255,.06);}
-@media(max-width:780px){.cols{grid-template-columns:1fr;}.ph{padding:0 1rem;}.nie-badge,.sec{display:none;}.wrap{padding:1rem;}.hero{grid-template-columns:1fr;gap:1rem;}.pr{grid-template-columns:1fr 1fr;}}
-"""
+@media(max-width:780px){.cols{grid-template-columns:1fr;}.ph{padding:0 1rem;}.nie-b,.sec{display:none;}.wrap{padding:1rem;}.hero{grid-template-columns:1fr;gap:1rem;}.pr{grid-template-columns:1fr 1fr;}}"""
 
+# ── PORTAL HTML ───────────────────────────────────────────────────────────────
 def build_portal(proc, client_name, pagos):
-    props    = proc["properties"]
-    nie      = gp(props,"NIE")
-    asunto   = gp(props,"Asunto específico")
-    tipo     = gp(props,"Tipo de proceso")
-    materia  = gp(props,"Materia")
-    estado   = gp(props,"Estado","En trámite")
-    abg_raw  = gp(props,"Abogado asignado","")
-    apertura = gp(props,"Fecha de apertura")
-    aud      = gp(props,"Fecha de próxima audiencia")
-    nota     = gp(props,"Nota para el cliente") or ""
-    pactado  = float(gp(props,"Honorario pactado ($)",0) or 0)
-    cobrado_r= float(gp(props,"Total cobrado ($)",0) or 0)
-    cobrado  = cobrado_r if cobrado_r>0 else sum(float(p["monto"] or 0) for p in pagos)
-    pendiente= max(0,pactado-cobrado)
-    bar      = pct(cobrado,pactado)
-    updated  = (proc.get("last_edited_time") or "")[:10]
-    abg_full = ABG.get(abg_raw, abg_raw)
-    abg_ini  = "T" if "Conjunto" in abg_raw else (abg_raw[0] if abg_raw else "N")
+    props     = proc["properties"]
+    nie       = gp(props, "NIE")
+    asunto    = gp(props, "Asunto específico") or "Proceso legal"
+    tipo      = gp(props, "Tipo de proceso") or "—"
+    materia   = gp(props, "Materia") or "—"
+    estado    = gp(props, "Estado", "En trámite")
+    abg_raw   = gp(props, "Abogado asignado", "")
+    apertura  = gp(props, "Fecha de apertura")
+    aud       = gp(props, "Fecha de próxima audiencia")
+    nota      = gp(props, "Nota para el cliente") or ""
+    pactado   = float(gp(props, "Honorario pactado ($)", 0) or 0)
+    cobrado_r = float(gp(props, "Total cobrado ($)", 0) or 0)
+    cobrado   = cobrado_r if cobrado_r > 0 else sum(float(p.get("monto") or 0) for p in pagos)
+    pendiente = max(0, pactado - cobrado)
+    bar       = pct(cobrado, pactado)
+    updated   = (proc.get("last_edited_time") or "")[:10]
+    abg_full  = ABG.get(abg_raw, abg_raw or "Firma Legal S.B.S.")
+    abg_ini   = "T" if "Conjunto" in abg_raw else (abg_raw[0] if abg_raw else "N")
+    yr        = datetime.now().year
 
+    # Pagos
     pagos_html = ""
     for p in pagos:
-        pagos_html += f'<div class="pr"><span class="prf">{fshort(p["fecha"])}</span><span class="prg">{p["tipo"]}</span><span class="prc">{p["concepto"]}</span><span class="prfm">{p["forma"]}</span><span class="prm">{cur(p["monto"])}</span></div>'
+        pagos_html += (
+            f'<div class="pr">'
+            f'<span class="prf">{fshort(p.get("fecha",""))}</span>'
+            f'<span class="prg">{p.get("tipo","")}</span>'
+            f'<span class="prc">{p.get("concepto","")}</span>'
+            f'<span class="prfm">{p.get("forma","")}</span>'
+            f'<span class="prm">{cur(p.get("monto",0))}</span>'
+            f'</div>'
+        )
     if not pagos_html:
         pagos_html = '<p class="empty">Sin movimientos registrados aún.</p>'
 
+    # Audiencia
     if aud and aud != "—":
-        fecha_blk = f'<div class="fr"><div class="fb"><div class="fd">{fday(aud)}</div><div class="fm">{fmon(aud)}</div></div><div><div class="ft">Próxima diligencia</div><div class="fdesc">{fdate(aud)}</div></div></div>'
+        fecha_blk = (
+            f'<div class="fr">'
+            f'<div class="fb"><div class="fd">{fday(aud)}</div><div class="fm">{fmon(aud)}</div></div>'
+            f'<div><div class="ft">Próxima diligencia</div><div class="fdesc">{fdate(aud)}</div></div>'
+            f'</div>'
+        )
     else:
         fecha_blk = '<p class="empty">Sin fechas programadas por el momento.</p>'
 
+    # Nota cliente
     if nota.strip():
-        nota_blk = f'<div class="nov"><div class="nm"><span class="nq">{abg_full}</span><span class="nf">{fshort(updated)}</span><span class="nt">NOVEDAD</span></div><div class="ntx">{nota}</div></div>'
+        nota_blk = (
+            f'<div class="nov">'
+            f'<div class="nm"><span class="nq">{abg_full}</span>'
+            f'<span class="nf">{fshort(updated)}</span>'
+            f'<span class="nt">NOVEDAD</span></div>'
+            f'<div class="ntx">{nota}</div>'
+            f'</div>'
+        )
     else:
         nota_blk = '<p class="empty">Sin novedades publicadas aún. Le comunicaremos cuando haya avances relevantes.</p>'
 
-    yr = datetime.now().year
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -223,8 +274,12 @@ def build_portal(proc, client_name, pagos):
 </head>
 <body>
 <div class="ph">
-  <div class="ph-l"><span class="logo">FIRMA LEGAL S.B.S.</span><div class="sep"></div><span class="tag">PORTAL DE SEGUIMIENTO</span></div>
-  <div class="ph-r"><span class="nie-badge">{nie}</span><span class="who">Bienvenido/a, <strong>{client_name.split()[0]}</strong></span><span class="sec">🔒 ACCESO SEGURO</span></div>
+  <div class="ph-l"><span class="logo">FIRMA LEGAL S.B.S.</span><div class="sep"></div><span class="ptag">PORTAL DE SEGUIMIENTO</span></div>
+  <div class="ph-r">
+    <span class="nie-b">{nie}</span>
+    <span class="who">Bienvenido/a, <strong>{client_name.split()[0] if client_name else 'Cliente'}</strong></span>
+    <span class="sec">🔒 ACCESO SEGURO</span>
+  </div>
 </div>
 <div class="wrap">
   <div class="hero">
@@ -274,47 +329,93 @@ def build_portal(proc, client_name, pagos):
   </div>
 </div>
 <footer><p>Portal de uso exclusivo del cliente · Información confidencial<br>
-<a href="https://wa.me/50375783147?text=Consulta%20proceso%20{nie}">¿Consultas? WhatsApp</a> · Firma Legal S.B.S. · San Miguel · {yr}</p></footer>
+<a href="https://wa.me/50375783147?text=Consulta%20proceso%20{nie}">¿Consultas? Escríbanos por WhatsApp</a>
+ · Firma Legal S.B.S. · San Miguel · {yr}</p></footer>
 <div class="gen">ACTUALIZADO {fshort(datetime.now().strftime('%Y-%m-%d'))}</div>
 </body></html>"""
 
+# ── INDEX ─────────────────────────────────────────────────────────────────────
 def build_index(portales):
-    items = "".join(f'<div class="item"><span class="nie">{p["nie"]}</span><span class="nombre">{p["nombre"]}</span><span class="estado">{p["estado"]}</span></div>' for p in portales)
-    return f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Portales SBS</title>
-<style>body{{font-family:sans-serif;background:#0c1c38;color:#fff;padding:2rem;}}h1{{color:#C9A84C;margin-bottom:1rem;}}.item{{display:flex;gap:1.5rem;padding:.7rem 0;border-bottom:1px solid rgba(255,255,255,.07);flex-wrap:wrap;}}.nie{{font-family:monospace;color:#C9A84C;min-width:160px;}}.nombre{{flex:1;}}.estado{{color:rgba(255,255,255,.5);min-width:140px;}}.ts{{font-size:11px;color:rgba(255,255,255,.3);margin-top:2rem;}}</style>
-</head><body><h1>⚖️ Firma Legal S.B.S. — Portales activos</h1>{items}<div class="ts">Última generación: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC</div></body></html>"""
+    items = "".join(
+        f'<div class="item"><span class="nie">{p["nie"]}</span>'
+        f'<span class="nombre">{p["nombre"]}</span>'
+        f'<span class="estado">{p["estado"]}</span></div>'
+        for p in portales
+    )
+    ts = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
+    return f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Portales S.B.S.</title>
+<style>body{{font-family:sans-serif;background:#0c1c38;color:#fff;padding:2rem;}}
+h1{{color:#C9A84C;margin-bottom:1rem;font-size:1.3rem;}}
+.item{{display:flex;gap:1.5rem;padding:.7rem 0;border-bottom:1px solid rgba(255,255,255,.07);flex-wrap:wrap;}}
+.nie{{font-family:monospace;color:#C9A84C;min-width:160px;font-size:13px;}}
+.nombre{{flex:1;font-size:14px;}}
+.estado{{color:rgba(255,255,255,.5);min-width:140px;font-size:12px;}}
+.ts{{font-size:11px;color:rgba(255,255,255,.3);margin-top:2rem;}}</style>
+</head><body>
+<h1>⚖️ Firma Legal S.B.S. — Portales activos</h1>
+{items}
+<div class="ts">Última generación: {ts} UTC</div>
+</body></html>"""
 
+# ── MAIN ──────────────────────────────────────────────────────────────────────
 def main():
-    print("📋 Consultando Notion...")
-    procesos = notion_query(PROCESOS_DB_ID, {"property":"Portal activo","checkbox":{"equals":True}})
+    print("📋 Consultando base de Procesos...")
+    procesos = notion_query(PROCESOS_DB_ID, {
+        "property": "Portal activo",
+        "checkbox": {"equals": True}
+    })
     print(f"   → {len(procesos)} proceso(s) con portal activo")
 
     portales = []
     for proc in procesos:
         props = proc["properties"]
-        nie = gp(props, "NIE")
-        if not nie: continue
+        nie   = gp(props, "NIE")
+        if not nie:
+            continue
 
-        client_ids = gp(props, "Cliente", [])
+        # Nombre del cliente
         client_name = "Cliente"
+        client_ids  = gp(props, "Cliente", [])
         if client_ids:
-            try:
-                cp = notion_get_page(client_ids[0])
+            cp = notion_get_page(client_ids[0])
+            if cp:
                 client_name = gp(cp["properties"], "Nombre completo", "Cliente")
-            except Exception as e:
-                print(f"   ⚠️  {nie}: {e}")
 
-        pagos_raw = notion_query(HONORARIOS_DB_ID, {"property":"Proceso (NIE)","relation":{"contains":proc["id"]}})
-        pagos = sorted([{"concepto":gp(p["properties"],"Concepto"),"tipo":gp(p["properties"],"Tipo de movimiento"),"monto":gp(p["properties"],"Monto recibido ($)",0),"forma":gp(p["properties"],"Forma de pago"),"fecha":gp(p["properties"],"Fecha de pago")} for p in pagos_raw], key=lambda x: x["fecha"] or "")
+        # Pagos — tolerante a 404
+        pagos = []
+        pagos_raw = notion_query(HONORARIOS_DB_ID, {
+            "property": "Proceso (NIE)",
+            "relation": {"contains": proc["id"]}
+        })
+        for p in pagos_raw:
+            pp = p["properties"]
+            pagos.append({
+                "concepto": gp(pp, "Concepto"),
+                "tipo":     gp(pp, "Tipo de movimiento"),
+                "monto":    gp(pp, "Monto recibido ($)", 0),
+                "forma":    gp(pp, "Forma de pago"),
+                "fecha":    gp(pp, "Fecha de pago"),
+            })
+        pagos.sort(key=lambda x: x.get("fecha") or "")
 
-        print(f"   → {nie} — {client_name} ({len(pagos)} pago(s))")
+        print(f"   → Generando: {nie} — {client_name} ({len(pagos)} pago(s))")
         html = build_portal(proc, client_name, pagos)
-        with open(f"{OUTPUT_DIR}/{nie}.html","w",encoding="utf-8") as f: f.write(html)
-        portales.append({"nie":nie,"nombre":client_name,"estado":gp(props,"Estado","—")})
+        with open(f"{OUTPUT_DIR}/{nie}.html", "w", encoding="utf-8") as f:
+            f.write(html)
 
-    with open(f"{OUTPUT_DIR}/index.html","w",encoding="utf-8") as f: f.write(build_index(portales))
-    print(f"\n✅ {len(portales)} portal(es) en /{OUTPUT_DIR}/")
-    for p in portales: print(f"   · {p['nie']}.html — {p['nombre']}")
+        portales.append({
+            "nie":    nie,
+            "nombre": client_name,
+            "estado": gp(props, "Estado", "—"),
+        })
+
+    # Índice
+    with open(f"{OUTPUT_DIR}/index.html", "w", encoding="utf-8") as f:
+        f.write(build_index(portales))
+
+    print(f"\n✅ {len(portales)} portal(es) generado(s) en /{OUTPUT_DIR}/")
+    for p in portales:
+        print(f"   · {p['nie']}.html — {p['nombre']}")
 
 if __name__ == "__main__":
     main()
