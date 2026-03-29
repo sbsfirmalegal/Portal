@@ -23,7 +23,7 @@ jobs:
           python-version: '3.11'
 
       - name: Instalar dependencias
-        run: pip install notion-client
+        run: pip install requests
 
       - name: Generar portales desde Notion
         run: python generate.py
